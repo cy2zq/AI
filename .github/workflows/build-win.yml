@@ -19,7 +19,7 @@ jobs:
           node-version: "20"
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install --legacy-peer-deps
 
       - name: Package for Windows
         run: npm run package -- --platform=win32 --arch=x64
