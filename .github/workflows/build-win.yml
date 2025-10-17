@@ -18,6 +18,9 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Configure Git to use HTTPS
+        run: git config --global url."https://github.com/".insteadOf ssh://git@github.com/
+
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
