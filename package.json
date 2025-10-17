@@ -1,0 +1,69 @@
+{
+  "name": "chrome-mcp-controller",
+  "productName": "Chrome MCP 控制器",
+  "version": "1.0.0",
+  "description": "基于 MCP 协议的 Chrome 浏览器 AI 控制工具",
+  "main": "main.js",
+  "author": "cy",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "NODE_ENV=development nodemon --exec \"electron .\" --watch . --ext js,html,css,json",
+    "package": "electron-forge package",
+    "make": "electron-forge make"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.10.2",
+    "@electron-forge/maker-deb": "^7.10.2",
+    "@electron-forge/maker-dmg": "^7.10.2",
+    "@electron-forge/maker-rpm": "^7.10.2",
+    "@electron-forge/maker-squirrel": "^7.10.2",
+    "@electron-forge/maker-zip": "^7.10.2",
+    "electron": "^38.3.0",
+    "electron-reload": "^2.0.0-alpha.1",
+    "nodemon": "^3.1.10"
+  },
+  "dependencies": {
+    "chrome-devtools-mcp": "latest"
+  },
+  "config": {
+    "forge": {
+      "packagerConfig": {
+        "name": "Chrome MCP 控制器",
+        "executableName": "chrome-mcp-controller",
+        "icon": "resources/Ai_File",
+        "asar": false,
+        "osxSign": false,
+        "osxNotarize": false,
+        "extraResource": [
+          "resources"
+        ]
+      },
+      "makers": [
+        {
+          "name": "@electron-forge/maker-dmg",
+          "config": {
+            "name": "ChromeMCPController",
+            "format": "ULFO"
+          }
+        },
+        {
+          "name": "@electron-forge/maker-squirrel",
+          "config": {
+            "name": "chrome-mcp-controller"
+          },
+          "platforms": [
+            "win32"
+          ]
+        },
+        {
+          "name": "@electron-forge/maker-zip",
+          "platforms": [
+            "darwin",
+            "win32"
+          ]
+        }
+      ]
+    }
+  }
+}
