@@ -15,9 +15,9 @@ window.addEventListener("DOMContentLoaded", () => {
 
 // 暴露安全的 API 给渲染进程
 contextBridge.exposeInMainWorld("electronAPI", {
-  // Chrome 调试模式控制
-  launchChrome: (mode, useExistingProfile) =>
-    ipcRenderer.invoke("launch-chrome", mode, useExistingProfile),
+  // Chrome 调试模式控制（支持选择引擎）
+  launchChrome: (mode, useExistingProfile, engine) =>
+    ipcRenderer.invoke("launch-chrome", mode, useExistingProfile, engine),
   stopChrome: () => ipcRenderer.invoke("stop-chrome"),
 
   // 浏览器操作（直接控制模式）
@@ -30,11 +30,32 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke("mcp-search-taobao", keyword),
   mcpSearchBaidu: (keyword) => ipcRenderer.invoke("mcp-search-baidu", keyword),
 
+  // Playwright 专用操作
+  playwrightNavigate: (url) => ipcRenderer.invoke("playwright-navigate", url),
+  playwrightClick: (selector) =>
+    ipcRenderer.invoke("playwright-click", selector),
+  playwrightFill: (selector, value) =>
+    ipcRenderer.invoke("playwright-fill", selector, value),
+  playwrightScreenshot: (options) =>
+    ipcRenderer.invoke("playwright-screenshot", options),
+  playwrightEvaluate: (script) =>
+    ipcRenderer.invoke("playwright-evaluate", script),
+  playwrightGetTitle: () => ipcRenderer.invoke("playwright-get-title"),
+  playwrightConnectCDP: (cdpUrl) =>
+    ipcRenderer.invoke("playwright-connect-cdp", cdpUrl),
+
   // 监听 Chrome 状态变化
   onChromeStatus: (callback) => {
     ipcRenderer.on("chrome-status", (event, status) => callback(status));
   },
 
+  // 监听操作日志
+  onOperationLog: (callback) => {
+    ipcRenderer.on("operation-log", (event, log) => callback(log));
+  },
+
   // 获取日志文件路径
   getLogPath: () => ipcRenderer.invoke("get-log-path"),
+  // 获取本机局域网 IP
+  getLocalIP: () => ipcRenderer.invoke("get-local-ip"),
 });

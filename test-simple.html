@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>简单测试</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 40px;
+      background: #f0f0f0;
+    }
+    button {
+      padding: 20px 40px;
+      font-size: 18px;
+      background: #28a745;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      margin: 10px;
+    }
+    button:hover {
+      background: #218838;
+    }
+    #log {
+      background: white;
+      padding: 20px;
+      margin-top: 20px;
+      border-radius: 8px;
+      font-family: monospace;
+      white-space: pre-wrap;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+  </style>
+</head>
+<body>
+  <h1>🧪 MCP 启动测试</h1>
+  
+  <button id="testBtn">🚀 测试启动 MCP</button>
+  <button id="checkBtn">🔍 检查 API</button>
+  
+  <div id="log"></div>
+  
+  <script>
+    const logDiv = document.getElementById('log');
+    
+    function log(msg) {
+      const time = new Date().toLocaleTimeString();
+      logDiv.textContent += `[${time}] ${msg}\n`;
+      console.log(msg);
+    }
+    
+    // 检查 API
+    document.getElementById('checkBtn').addEventListener('click', () => {
+      log('=== 开始检查 API ===');
+      
+      if (!window.electronAPI) {
+        log('❌ window.electronAPI 不存在！');
+        return;
+      }
+      
+      log('✅ window.electronAPI 存在');
+      log('类型: ' + typeof window.electronAPI);
+      log('方法列表: ' + Object.keys(window.electronAPI).join(', '));
+      
+      if (window.electronAPI.launchChrome) {
+        log('✅ launchChrome 方法存在');
+        log('类型: ' + typeof window.electronAPI.launchChrome);
+      } else {
+        log('❌ launchChrome 方法不存在');
+      }
+    });
+    
+    // 测试启动
+    document.getElementById('testBtn').addEventListener('click', async () => {
+      log('=== 开始测试启动 ===');
+      
+      if (!window.electronAPI || !window.electronAPI.launchChrome) {
+        log('❌ API 不可用');
+        return;
+      }
+      
+      try {
+        log('调用 launchChrome("mcp", false)...');
+        const result = await window.electronAPI.launchChrome("mcp", false);
+        log('✅ 调用成功');
+        log('结果: ' + JSON.stringify(result, null, 2));
+      } catch (error) {
+        log('❌ 调用失败: ' + error.message);
+        log('堆栈: ' + error.stack);
+      }
+    });
+    
+    // 页面加载时自动检查
+    window.addEventListener('DOMContentLoaded', () => {
+      log('✅ 页面加载完成');
+      
+      // 自动检查 API
+      setTimeout(() => {
+        document.getElementById('checkBtn').click();
+      }, 100);
+    });
+  </script>
+</body>
+</html>

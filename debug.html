@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>调试页面</title>
+  <style>
+    body {
+      font-family: monospace;
+      padding: 20px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+    }
+    .log {
+      background: #252526;
+      padding: 10px;
+      margin: 10px 0;
+      border-radius: 4px;
+      border-left: 3px solid #007acc;
+    }
+    .error {
+      border-left-color: #f48771;
+    }
+    .success {
+      border-left-color: #89d185;
+    }
+    button {
+      padding: 10px 20px;
+      margin: 5px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔍 Electron API 调试</h1>
+  
+  <div id="output"></div>
+  
+  <button onclick="testAPI()">测试 API</button>
+  <button onclick="testLaunch()">测试启动</button>
+  
+  <script>
+    const output = document.getElementById('output');
+    
+    function log(message, type = 'log') {
+      const div = document.createElement('div');
+      div.className = `log ${type}`;
+      div.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+      output.appendChild(div);
+      console.log(message);
+    }
+    
+    function testAPI() {
+      log('开始测试 API...');
+      
+      // 检查 window.electronAPI
+      if (typeof window.electronAPI === 'undefined') {
+        log('❌ window.electronAPI 未定义！', 'error');
+        return;
+      }
+      log('✅ window.electronAPI 存在', 'success');
+      
+      // 检查各个方法
+      const methods = [
+        'launchChrome',
+        'stopChrome',
+        'navigateToUrl',
+        'baiduSearch',
+        'mcpNavigate',
+        'getLogPath',
+        'getLocalIP'
+      ];
+      
+      methods.forEach(method => {
+        if (typeof window.electronAPI[method] === 'function') {
+          log(`✅ ${method} 存在`, 'success');
+        } else {
+          log(`❌ ${method} 不存在`, 'error');
+        }
+      });
+    }
+    
+    async function testLaunch() {
+      log('开始测试启动...');
+      
+      try {
+        log('调用 launchChrome("mcp", false)...');
+        const result = await window.electronAPI.launchChrome("mcp", false);
+        log(`结果: ${JSON.stringify(result)}`, result.success ? 'success' : 'error');
+      } catch (error) {
+        log(`❌ 错误: ${error.message}`, 'error');
+        log(`堆栈: ${error.stack}`, 'error');
+      }
+    }
+    
+    // 页面加载时自动测试
+    window.addEventListener('DOMContentLoaded', () => {
+      log('页面加载完成');
+      testAPI();
+    });
+  </script>
+</body>
+</html>

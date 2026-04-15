@@ -4,6 +4,10 @@ const { spawn } = require("child_process");
 const http = require("http");
 const HTTPServer = require("./http-server");
 const fs = require("fs");
+const os = require("os");
+const { WebSocket } = require("ws");
+const crypto = require("crypto");
+const PlaywrightManager = require("./playwright-manager");
 
 // 创建日志文件（用于排查双击启动问题）
 const logFile = path.join(app.getPath("userData"), "mcp-debug.log");
@@ -27,12 +31,53 @@ let mainWindow = null;
 let mcpProcess = null;
 let controlMode = "direct";
 
+// Playwright 管理
+let playwrightManager = null;
+let browserEngine = "chrome-mcp"; // chrome-mcp | playwright
+
 // MCP 通信相关变量
 let mcpRequestId = 0;
 let mcpPendingRequests = new Map(); // direct 或 mcp
 
 // HTTP 服务器
 let httpServer = null;
+let wsClient = null;
+
+// 生成/读取持久化的 ClientID（保存在 userData 下）
+function getPersistentClientId() {
+  try {
+    const idFile = path.join(app.getPath("userData"), "client-id.txt");
+    if (fs.existsSync(idFile)) {
+      const saved = fs.readFileSync(idFile, "utf8").trim();
+      if (saved) return saved;
+    }
+    const id = `${os.hostname()}-${crypto.randomUUID()}`;
+    fs.writeFileSync(idFile, id, "utf8");
+    return id;
+  } catch (e) {
+    return `${os.hostname()}-${process.pid}`;
+  }
+}
+
+// 获取本机局域网 IPv4 地址（优先 en0/Wi-Fi，其次第一张非内网回环）
+function getLocalIPv4() {
+  try {
+    const nets = os.networkInterfaces();
+    const pick = (name) =>
+      (nets[name] || []).find((x) => x.family === "IPv4" && !x.internal)
+        ?.address;
+    const preferred =
+      pick("en0") || pick("Wi-Fi") || pick("Ethernet") || pick("en1");
+    if (preferred) return preferred;
+    for (const key of Object.keys(nets)) {
+      const found = (nets[key] || []).find(
+        (x) => x.family === "IPv4" && !x.internal
+      );
+      if (found) return found.address;
+    }
+  } catch {}
+  return "";
+}
 
 const createWindow = () => {
   // 创建浏览器窗口
@@ -46,13 +91,22 @@ const createWindow = () => {
     },
   });
 
-  // 加载 index.html
-  mainWindow.loadFile("index.html");
+  // 加载 index.html（可以通过环境变量切换到测试页面）
+  const htmlFile = process.env.TEST_MODE === "1" ? "test-simple.html" : "index.html";
+  mainWindow.loadFile(htmlFile);
+  writeLog(`加载页面: ${htmlFile}`);
 
   // 开发环境下自动打开开发者工具
   if (process.env.NODE_ENV === "development" || !app.isPackaged) {
     mainWindow.webContents.openDevTools();
   }
+
+  // 添加快捷键：Cmd+R 刷新页面
+  mainWindow.webContents.on("before-input-event", (event, input) => {
+    if (input.key === "r" && (input.meta || input.control)) {
+      mainWindow.webContents.reload();
+    }
+  });
 };
 
 // 这段程序将会在 Electron 结束初始化
@@ -75,6 +129,93 @@ app.whenReady().then(() => {
 
   createWindow();
 
+  // 允许通过环境变量在启动时自动进入 MCP 模式，便于无人值守验证
+  if (process.env.AUTO_MCP === "1") {
+    writeLog("检测到 AUTO_MCP=1，启动 MCP 模式以便自动验证");
+    launchMCP().then((res) => {
+      writeLog(`AUTO_MCP 启动结果: ${JSON.stringify(res)}`);
+    });
+  }
+
+  // 若配置了后端 WS 地址，则注册 WS 客户端
+  const wsUrl = process.env.BACKEND_WS_URL || process.env.MCP_WS_URL;
+  if (wsUrl) {
+    const clientId = process.env.CLIENT_ID || getPersistentClientId();
+    try {
+      const url = `${wsUrl}?clientId=${encodeURIComponent(clientId)}`;
+      writeLog(`连接后端 WS: ${url}`);
+      wsClient = new WebSocket(url);
+
+      wsClient.on("open", () => {
+        writeLog(`WS 已连接: ${clientId}`);
+      });
+
+      wsClient.on("message", async (data) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg && msg.type === "mcp.call" && msg.id) {
+            const { tool, args } = msg;
+            let response;
+
+            if (tool === "navigate_page") {
+              response = await sendMCPRequest("tools/call", {
+                name: "navigate_page",
+                arguments: args || {},
+              });
+            } else if (tool === "search" || tool === "search-baidu") {
+              // 默认搜索或百度搜索
+              const keyword = args?.keyword || "";
+              const url = `https://www.baidu.com/s?wd=${encodeURIComponent(keyword)}`;
+              response = await sendMCPRequest("tools/call", {
+                name: "navigate_page",
+                arguments: { url, timeout: 10000 },
+              });
+            } else if (tool === "search-taobao") {
+              const keyword = args?.keyword || "";
+              const url = `https://s.taobao.com/search?q=${encodeURIComponent(keyword)}`;
+              response = await sendMCPRequest("tools/call", {
+                name: "navigate_page",
+                arguments: { url, timeout: 10000 },
+              });
+            } else if (tool === "search-jd") {
+              const keyword = args?.keyword || "";
+              const url = `https://search.jd.com/Search?keyword=${encodeURIComponent(keyword)}`;
+              response = await sendMCPRequest("tools/call", {
+                name: "navigate_page",
+                arguments: { url, timeout: 10000 },
+              });
+            } else {
+              response = { error: `unsupported tool: ${tool}` };
+            }
+
+            const ack = {
+              type: "mcp.result",
+              id: msg.id,
+              ok: !response?.error,
+              data: response,
+            };
+            wsClient.send(JSON.stringify(ack));
+          }
+        } catch (e) {
+          writeLog(`WS 消息处理错误: ${e.message}`);
+        }
+      });
+
+      wsClient.on("close", () => {
+        writeLog("WS 已断开");
+      });
+
+      wsClient.on("error", (err) => {
+        writeLog(`WS 错误: ${err.message}`);
+      });
+    } catch (e) {
+      writeLog(`WS 初始化失败: ${e.message}`);
+    }
+  }
+
+  // 暴露本机 IP 给渲染进程
+  ipcMain.handle("get-local-ip", () => getLocalIPv4());
+
   app.on("activate", () => {
     // 在 macOS 上，当点击 dock 图标并且没有其他窗口打开的时候，
     // 通常在应用程序中重新创建一个窗口。
@@ -94,16 +235,31 @@ app.on("window-all-closed", () => {
 // Chrome 启动路径检测
 function getChromePath() {
   const platform = process.platform;
+
+  // 优先使用环境变量（适配其它Mac自定义安装路径）
+  if (process.env.CHROME_PATH && isChromeBinary(process.env.CHROME_PATH)) {
+    return [process.env.CHROME_PATH];
+  }
+
   const paths = {
     darwin: [
       "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
       "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+      "/Applications/Chromium.app/Contents/MacOS/Chromium",
+      "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+      "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
     ],
     win32: [
       "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
       "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
     ],
-    linux: ["/usr/bin/google-chrome", "/usr/bin/chromium-browser"],
+    linux: [
+      "/usr/bin/google-chrome",
+      "/usr/bin/google-chrome-stable",
+      "/usr/bin/chromium-browser",
+      "/usr/bin/chromium",
+    ],
   };
 
   return paths[platform] || [];
@@ -131,47 +287,112 @@ async function launchMCP() {
     const appPath = app.getAppPath();
     let mcpBinPath;
 
-    // 获取 Chrome 路径
-    const chromePath = getChromePath();
-    let args = ["--channel=stable", "--headless=false", "--isolated=true"];
+    // 获取 Chrome 路径（选择第一个可用的二进制）
+    const chromeCandidates = getChromePath();
+    let chromePath = null;
+    for (const candidate of chromeCandidates) {
+      if (isChromeBinary(candidate)) {
+        chromePath = candidate;
+        break;
+      }
+    }
+
+    // 基础参数；channel 与 executablePath 互斥，后续按情况添加
+    let args = ["--headless=false", "--isolated=false"]; // 改为 false 以允许使用持久化的用户数据
+
+    // 透传额外的 Chrome 参数（空格分隔，或多次 --chrome-arg 都可）
+    // 例如：CHROME_ARGS="--disable-gpu --use-angle=metal"
+    if (process.env.CHROME_ARGS) {
+      const extra = process.env.CHROME_ARGS.split(/\s+/)
+        .filter(Boolean)
+        .map((a) => `--chrome-arg=${a}`);
+      if (extra.length) {
+        args.push(...extra);
+        writeLog(`透传 CHROME_ARGS 到 MCP: ${JSON.stringify(extra)}`);
+      }
+    }
+
+    // 使用持久化的用户数据目录（保存在 userData 下，而不是临时目录）
+    const persistentUserDataDir = path.join(
+      app.getPath("userData"),
+      "chrome-profile"
+    );
+    args.push(`--chrome-arg=--user-data-dir=${persistentUserDataDir}`);
+    writeLog(`使用持久化用户数据目录: ${persistentUserDataDir}`);
+
+    // 同时开启 TCP 端口，让 Playwright 可以连接到同一个浏览器实例
+    // MCP 会使用管道模式，Playwright 使用端口模式，两者可以共存
+    args.push(`--chrome-arg=--remote-debugging-port=9222`);
+    writeLog(`开启 CDP 端口 9222，允许 Playwright 连接`);
 
     // 如果找到了 Chrome，显式指定路径
     if (chromePath) {
-      args.push(`--chrome-path=${chromePath}`);
-      console.log("使用 Chrome 路径:", chromePath);
+      // MCP CLI 正确参数为 --executablePath；有路径时禁止再加 --channel
+      args.push(`--executablePath=${chromePath}`);
+      writeLog(`使用 Chrome 路径: ${chromePath}`);
+    } else {
+      // 未指定具体可执行文件时，使用稳定版通道
+      args.push("--channel=stable");
+      writeLog(
+        "未检测到已安装的 Chrome/Chromium 内核浏览器，将使用 MCP 默认查找。可通过环境变量 CHROME_PATH 指定路径。"
+      );
     }
 
     if (app.isPackaged) {
-      // 打包后：使用 APP 内置的 Node.js（无需用户安装）
-      const bundledNodePath = path.join(
-        process.resourcesPath,
-        "resources",
-        "node"
-      );
+      // 打包后：使用打包的 chrome-devtools-mcp
+      const platform = process.platform;
+      const binExt = platform === "win32" ? ".cmd" : "";
 
-      const mcpScriptPath = path.join(
+      mcpBinPath = path.join(
         appPath,
         "node_modules",
-        "chrome-devtools-mcp",
-        "build",
-        "src",
-        "index.js"
+        ".bin",
+        `chrome-devtools-mcp${binExt}`
       );
 
-      // 检查内置的 Node.js 是否存在
-      if (!fs.existsSync(bundledNodePath)) {
-        writeLog(`错误: 内置 Node.js 不存在: ${bundledNodePath}`);
-        return resolve({
-          success: false,
-          error: "内置 Node.js 缺失，请重新安装 APP",
-        });
+      writeLog(`打包环境 - MCP 路径: ${mcpBinPath}`);
+      writeLog(`MCP 文件是否存在: ${fs.existsSync(mcpBinPath)}`);
+
+      // 如果 .bin 文件不存在，尝试直接使用 JS 入口
+      if (!fs.existsSync(mcpBinPath)) {
+        const mcpScriptPath = path.join(
+          appPath,
+          "node_modules",
+          "chrome-devtools-mcp",
+          "build",
+          "src",
+          "index.js"
+        );
+
+        if (fs.existsSync(mcpScriptPath)) {
+          // 在打包环境下，使用内置的 Node 可执行文件运行脚本，避免重新启动 Electron 应用本身
+          const nodeCandidates = [
+            path.join(process.resourcesPath, "app", "resources", "node"),
+            path.join(process.resourcesPath, "node"),
+          ];
+          let embeddedNode = null;
+          for (const candidate of nodeCandidates) {
+            if (fs.existsSync(candidate)) {
+              embeddedNode = candidate;
+              break;
+            }
+          }
+
+          mcpBinPath = embeddedNode || "node";
+          args = [mcpScriptPath, ...args];
+          if (embeddedNode) {
+            writeLog(`使用内置 Node 运行: ${mcpBinPath} ${mcpScriptPath}`);
+          } else {
+            writeLog(`回退到系统 Node 运行: node ${mcpScriptPath}`);
+          }
+        } else {
+          writeLog(`错误: MCP 脚本不存在: ${mcpScriptPath}`);
+          return resolve({
+            success: false,
+            error: "MCP 模块缺失，请重新安装 APP",
+          });
+        }
       }
-
-      mcpBinPath = bundledNodePath;
-      args = [mcpScriptPath, ...args];
-
-      writeLog(`使用内置 Node.js: ${mcpBinPath}`);
-      writeLog(`Node.js 文件大小: ${fs.statSync(bundledNodePath).size} 字节`);
     } else {
       // 开发环境：直接使用可执行文件
       mcpBinPath = path.join(
@@ -266,15 +487,43 @@ async function launchMCP() {
         writeLog(`MCP 进程退出: code=${code}, signal=${signal}`);
         mcpProcess = null;
         mcpPendingRequests.clear();
-        if (mainWindow) {
+        if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send("chrome-status", { running: false });
         }
       });
 
       // 等待 MCP 启动
       setTimeout(async () => {
+        sendOperationLog("success", "MCP", "浏览器进程已启动");
+
         // 启动 HTTP 服务器
         await startHTTPServer();
+        sendOperationLog("success", "系统", "HTTP 工具服务已启动");
+
+        // 自动打开一个可见页面，方便用户确认 Chrome 已经弹出
+        const startUrl = process.env.MCP_START_URL || "https://www.baidu.com";
+        try {
+          sendOperationLog("info", "导航", `正在打开起始页: ${startUrl}`);
+          await sendMCPRequest("tools/call", {
+            name: "navigate_page",
+            arguments: { url: startUrl, timeout: 15000 },
+          });
+          writeLog(`已自动打开调试页面: ${startUrl}`);
+          sendOperationLog("success", "导航", "起始页加载完成");
+        } catch (autoErr) {
+          writeLog(`自动打开页面失败（忽略）：${autoErr?.message || autoErr}`);
+          sendOperationLog(
+            "warning",
+            "导航",
+            `起始页加载失败: ${autoErr?.message}`
+          );
+        }
+
+        sendOperationLog(
+          "success",
+          "系统",
+          "🎉 MCP 模式已完全就绪，AI 助手可以开始工作了"
+        );
         resolve({ success: true, mode: "mcp" });
       }, 3000);
     } catch (error) {
@@ -291,54 +540,51 @@ async function startHTTPServer() {
   }
 
   try {
-    httpServer = new HTTPServer(9224);
+    // 创建 HTTP 服务器并传入日志回调
+    httpServer = new HTTPServer(9224, sendOperationLog);
+    writeLog("HTTP 服务器已创建，端口: 9224");
   } catch (error) {
     console.error("HTTP 服务器启动失败:", error);
     throw new Error(`端口 9224 可能被占用，请关闭其他实例后重试`);
   }
 
-  // 定义 MCP 工具处理函数
+  // 定义 MCP 工具处理函数（完整版本）
   const mcpHandlers = {
-    // 导航到指定URL
-    navigate: async ({ url }) => {
-      try {
-        await sendMCPRequest("tools/call", {
-          name: "navigate_page",
-          arguments: { url, timeout: 10000 },
-        });
-        return { success: true, message: `已打开: ${url}` };
-      } catch (error) {
-        return { success: false, error: error.message };
-      }
-    },
-
-    // 获取页面快照
-    "take-snapshot": async () => {
-      try {
-        const result = await sendMCPRequest("tools/call", {
-          name: "take_snapshot",
-          arguments: {},
-        });
-        return { success: true, snapshot: result };
-      } catch (error) {
-        return { success: false, error: error.message };
-      }
-    },
+    // ==================== 输入自动化 (Input automation) ====================
 
     // 点击元素
-    click: async ({ uid }) => {
+    click: async ({ uid, dblClick }) => {
       try {
         await sendMCPRequest("tools/call", {
           name: "click",
-          arguments: { uid },
+          arguments: { uid, dblClick: dblClick || false },
         });
-        return { success: true, message: `已点击元素: ${uid}` };
+        return {
+          success: true,
+          message: `已${dblClick ? "双击" : "点击"}元素: ${uid}`,
+        };
       } catch (error) {
         return { success: false, error: error.message };
       }
     },
 
-    // 填写输入框
+    // 拖拽元素
+    drag: async ({ from_uid, to_uid }) => {
+      try {
+        await sendMCPRequest("tools/call", {
+          name: "drag",
+          arguments: { from_uid, to_uid },
+        });
+        return {
+          success: true,
+          message: `已拖拽元素 ${from_uid} 到 ${to_uid}`,
+        };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 填写输入框或选择下拉选项
     fill: async ({ uid, value }) => {
       try {
         await sendMCPRequest("tools/call", {
@@ -351,17 +597,369 @@ async function startHTTPServer() {
       }
     },
 
-    // 淘宝搜索
-    "search-taobao": async ({ keyword }) => {
+    // 批量填写表单
+    fill_form: async ({ elements }) => {
       try {
-        const searchUrl = `https://s.taobao.com/search?q=${encodeURIComponent(
+        await sendMCPRequest("tools/call", {
+          name: "fill_form",
+          arguments: { elements },
+        });
+        return {
+          success: true,
+          message: `已填写 ${elements.length} 个表单元素`,
+        };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 处理浏览器对话框
+    handle_dialog: async ({ action, promptText }) => {
+      try {
+        await sendMCPRequest("tools/call", {
+          name: "handle_dialog",
+          arguments: { action, promptText },
+        });
+        return {
+          success: true,
+          message: `已${action === "accept" ? "接受" : "取消"}对话框`,
+        };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 悬停在元素上
+    hover: async ({ uid }) => {
+      try {
+        await sendMCPRequest("tools/call", {
+          name: "hover",
+          arguments: { uid },
+        });
+        return { success: true, message: `已悬停在元素: ${uid}` };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 上传文件
+    upload_file: async ({ uid, filePath }) => {
+      try {
+        await sendMCPRequest("tools/call", {
+          name: "upload_file",
+          arguments: { uid, filePath },
+        });
+        return { success: true, message: `已上传文件: ${filePath}` };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // ==================== 导航自动化 (Navigation automation) ====================
+
+    // 关闭页面
+    close_page: async ({ pageIdx }) => {
+      try {
+        await sendMCPRequest("tools/call", {
+          name: "close_page",
+          arguments: { pageIdx },
+        });
+        return { success: true, message: `已关闭页面 ${pageIdx}` };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 列出所有打开的页面
+    list_pages: async () => {
+      try {
+        const result = await sendMCPRequest("tools/call", {
+          name: "list_pages",
+          arguments: {},
+        });
+        return { success: true, pages: result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 导航到指定URL
+    navigate_page: async ({ url, timeout }) => {
+      try {
+        await sendMCPRequest("tools/call", {
+          name: "navigate_page",
+          arguments: { url, timeout: timeout || 10000 },
+        });
+        return { success: true, message: `已打开: ${url}` };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 别名：navigate（保持向后兼容）
+    navigate: async ({ url, timeout }) => {
+      try {
+        await sendMCPRequest("tools/call", {
+          name: "navigate_page",
+          arguments: { url, timeout: timeout || 10000 },
+        });
+        return { success: true, message: `已打开: ${url}` };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 前进/后退导航
+    navigate_page_history: async ({ navigate, timeout }) => {
+      try {
+        await sendMCPRequest("tools/call", {
+          name: "navigate_page_history",
+          arguments: { navigate, timeout: timeout || 10000 },
+        });
+        return {
+          success: true,
+          message: `已${navigate === "back" ? "后退" : "前进"}`,
+        };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 创建新页面
+    new_page: async ({ url, timeout }) => {
+      try {
+        await sendMCPRequest("tools/call", {
+          name: "new_page",
+          arguments: { url, timeout: timeout || 10000 },
+        });
+        return { success: true, message: `已创建新页面: ${url}` };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 选择页面
+    select_page: async ({ pageIdx }) => {
+      try {
+        await sendMCPRequest("tools/call", {
+          name: "select_page",
+          arguments: { pageIdx },
+        });
+        return { success: true, message: `已选择页面 ${pageIdx}` };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 等待指定文本出现
+    wait_for: async ({ text, timeout }) => {
+      try {
+        await sendMCPRequest("tools/call", {
+          name: "wait_for",
+          arguments: { text, timeout: timeout || 30000 },
+        });
+        return { success: true, message: `文本已出现: ${text}` };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // ==================== 模拟 (Emulation) ====================
+
+    // CPU 节流模拟
+    emulate_cpu: async ({ throttlingRate }) => {
+      try {
+        await sendMCPRequest("tools/call", {
+          name: "emulate_cpu",
+          arguments: { throttlingRate },
+        });
+        return {
+          success: true,
+          message: `已设置 CPU 节流率: ${throttlingRate}x`,
+        };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 网络节流模拟
+    emulate_network: async ({ throttlingOption }) => {
+      try {
+        await sendMCPRequest("tools/call", {
+          name: "emulate_network",
+          arguments: { throttlingOption },
+        });
+        return {
+          success: true,
+          message: `已设置网络节流: ${throttlingOption}`,
+        };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 调整页面尺寸
+    resize_page: async ({ width, height }) => {
+      try {
+        await sendMCPRequest("tools/call", {
+          name: "resize_page",
+          arguments: { width, height },
+        });
+        return { success: true, message: `已调整页面尺寸: ${width}x${height}` };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // ==================== 性能 (Performance) ====================
+
+    // 分析性能洞察
+    performance_analyze_insight: async ({ insightName }) => {
+      try {
+        const result = await sendMCPRequest("tools/call", {
+          name: "performance_analyze_insight",
+          arguments: { insightName },
+        });
+        return { success: true, insight: result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 开始性能追踪
+    performance_start_trace: async ({ reload, autoStop }) => {
+      try {
+        await sendMCPRequest("tools/call", {
+          name: "performance_start_trace",
+          arguments: { reload, autoStop },
+        });
+        return { success: true, message: "已开始性能追踪" };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 停止性能追踪
+    performance_stop_trace: async () => {
+      try {
+        const result = await sendMCPRequest("tools/call", {
+          name: "performance_stop_trace",
+          arguments: {},
+        });
+        return { success: true, trace: result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // ==================== 网络 (Network) ====================
+
+    // 获取网络请求详情
+    get_network_request: async ({ reqid }) => {
+      try {
+        const result = await sendMCPRequest("tools/call", {
+          name: "get_network_request",
+          arguments: { reqid },
+        });
+        return { success: true, request: result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 列出所有网络请求
+    list_network_requests: async ({ pageIdx, pageSize, resourceTypes }) => {
+      try {
+        const result = await sendMCPRequest("tools/call", {
+          name: "list_network_requests",
+          arguments: { pageIdx, pageSize, resourceTypes },
+        });
+        return { success: true, requests: result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // ==================== 调试 (Debugging) ====================
+
+    // 执行 JavaScript 脚本
+    evaluate_script: async ({ function: funcStr, args }) => {
+      try {
+        const result = await sendMCPRequest("tools/call", {
+          name: "evaluate_script",
+          arguments: { function: funcStr, args },
+        });
+        return { success: true, result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 列出控制台消息
+    list_console_messages: async ({ pageIdx, pageSize, types }) => {
+      try {
+        const result = await sendMCPRequest("tools/call", {
+          name: "list_console_messages",
+          arguments: { pageIdx, pageSize, types },
+        });
+        return { success: true, messages: result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 截图
+    take_screenshot: async ({ uid, filePath, format, fullPage, quality }) => {
+      try {
+        const result = await sendMCPRequest("tools/call", {
+          name: "take_screenshot",
+          arguments: { uid, filePath, format, fullPage, quality },
+        });
+        return { success: true, screenshot: result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 获取页面快照（基于可访问性树）
+    take_snapshot: async ({ verbose }) => {
+      try {
+        const result = await sendMCPRequest("tools/call", {
+          name: "take_snapshot",
+          arguments: { verbose: verbose || false },
+        });
+        return { success: true, snapshot: result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 别名：take-snapshot（保持向后兼容）
+    "take-snapshot": async ({ verbose }) => {
+      try {
+        const result = await sendMCPRequest("tools/call", {
+          name: "take_snapshot",
+          arguments: { verbose: verbose || false },
+        });
+        return { success: true, snapshot: result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // ==================== 自定义搜索工具 ====================
+
+    // 百度搜索（默认搜索引擎）
+    search: async ({ keyword }) => {
+      try {
+        const searchUrl = `https://www.baidu.com/s?wd=${encodeURIComponent(
           keyword
         )}`;
         await sendMCPRequest("tools/call", {
           name: "navigate_page",
           arguments: { url: searchUrl, timeout: 10000 },
         });
-        return { success: true, message: `已搜索: ${keyword}` };
+        return { success: true, message: `已在百度搜索: ${keyword}` };
       } catch (error) {
         return { success: false, error: error.message };
       }
@@ -377,15 +975,78 @@ async function startHTTPServer() {
           name: "navigate_page",
           arguments: { url: searchUrl, timeout: 10000 },
         });
-        return { success: true, message: `已搜索: ${keyword}` };
+        return { success: true, message: `已在百度搜索: ${keyword}` };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 淘宝搜索
+    "search-taobao": async ({ keyword }) => {
+      try {
+        const searchUrl = `https://s.taobao.com/search?q=${encodeURIComponent(
+          keyword
+        )}`;
+        await sendMCPRequest("tools/call", {
+          name: "navigate_page",
+          arguments: { url: searchUrl, timeout: 10000 },
+        });
+        return { success: true, message: `已在淘宝搜索: ${keyword}` };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    // 京东搜索
+    "search-jd": async ({ keyword }) => {
+      try {
+        const searchUrl = `https://search.jd.com/Search?keyword=${encodeURIComponent(
+          keyword
+        )}`;
+        await sendMCPRequest("tools/call", {
+          name: "navigate_page",
+          arguments: { url: searchUrl, timeout: 10000 },
+        });
+        return { success: true, message: `已在京东搜索: ${keyword}` };
       } catch (error) {
         return { success: false, error: error.message };
       }
     },
   };
 
-  await httpServer.start(mcpHandlers);
+  // 包装所有处理函数，添加额外的日志记录
+  const wrappedHandlers = {};
+  for (const [toolName, handler] of Object.entries(mcpHandlers)) {
+    wrappedHandlers[toolName] = async (params) => {
+      // 工具执行前的额外日志（针对底层 MCP 调用）
+      const paramsInfo = formatToolParams(toolName, params);
+      if (paramsInfo) {
+        sendOperationLog("info", `🛠 ${toolName}`, paramsInfo);
+      }
+
+      // 调用原始处理函数
+      return await handler(params);
+    };
+  }
+
+  await httpServer.start(wrappedHandlers);
   console.log("HTTP 服务器已启动，端口: 9224");
+  sendOperationLog("success", "系统", "MCP 工具服务已就绪");
+}
+
+// 格式化工具参数用于日志显示
+function formatToolParams(toolName, params) {
+  const parts = [];
+
+  if (params.url) parts.push(`URL: ${params.url}`);
+  if (params.keyword) parts.push(`关键词: "${params.keyword}"`);
+  if (params.uid) parts.push(`元素ID: ${params.uid}`);
+  if (params.value) parts.push(`值: "${params.value}"`);
+  if (params.selector) parts.push(`选择器: ${params.selector}`);
+  if (params.text) parts.push(`文本: "${params.text}"`);
+  if (params.filePath) parts.push(`文件: ${params.filePath}`);
+
+  return parts.length > 0 ? parts.join(", ") : null;
 }
 
 // 停止 HTTP 服务器
@@ -407,11 +1068,22 @@ async function stopMCP() {
 
   return new Promise((resolve) => {
     try {
+      // 检查进程是否已经被销毁
+      if (mcpProcess.killed || !mcpProcess.pid) {
+        mcpProcess = null;
+        mcpPendingRequests.clear();
+        resolve({ success: true });
+        return;
+      }
+
       mcpProcess.kill();
       mcpProcess = null;
       mcpPendingRequests.clear();
       resolve({ success: true });
     } catch (error) {
+      // 即使kill失败，也要清空进程引用，避免重复尝试
+      mcpProcess = null;
+      mcpPendingRequests.clear();
       resolve({ success: false, error: error.message });
     }
   });
@@ -433,6 +1105,8 @@ async function sendMCPRequest(method, params = {}) {
       params,
     };
 
+    // 记录 MCP 底层请求（仅在调试时）
+    writeLog(`发送 MCP 请求 #${id}: ${method}`);
     console.log("发送 MCP 请求:", request);
 
     // 保存请求回调
@@ -499,17 +1173,21 @@ async function launchChrome(useExistingProfile = true) {
           Date.now()
       );
     } else {
-      // 现有登录状态模式：使用专用的调试目录
-      // 这样可以避免与现有Chrome实例冲突，同时保留部分设置
-      const debugDir =
-        require("os").tmpdir() + "/chrome-debug-with-profile-" + Date.now();
+      // 现有登录状态模式：使用持久化的专用调试目录（保存在 userData 下）
+      // 这样可以避免与现有Chrome实例冲突，同时保留登录状态
+      const debugDir = path.join(
+        app.getPath("userData"),
+        "chrome-debug-profile"
+      );
       args.push("--user-data-dir=" + debugDir);
+      writeLog(`使用持久化调试目录: ${debugDir}`);
 
       // 添加参数来尝试保留登录状态
       args.push("--restore-last-session");
     }
 
     try {
+      console.log(args);
       chromeProcess = spawn(chromePath, args, {
         detached: true,
         stdio: "ignore",
@@ -520,9 +1198,10 @@ async function launchChrome(useExistingProfile = true) {
         resolve({ success: false, error: error.message });
       });
 
-      chromeProcess.on("exit", () => {
+      chromeProcess.on("exit", (code, signal) => {
+        console.log(`Chrome进程退出: code=${code}, signal=${signal}`);
         chromeProcess = null;
-        if (mainWindow) {
+        if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send("chrome-status", { running: false });
         }
       });
@@ -586,10 +1265,19 @@ async function stopChrome() {
     }
 
     try {
+      // 检查进程是否已经被销毁
+      if (chromeProcess.killed || !chromeProcess.pid) {
+        chromeProcess = null;
+        resolve({ success: true });
+        return;
+      }
+
       chromeProcess.kill();
       chromeProcess = null;
       resolve({ success: true });
     } catch (error) {
+      // 即使kill失败，也要清空进程引用，避免重复尝试
+      chromeProcess = null;
       resolve({ success: false, error: error.message });
     }
   });
@@ -710,6 +1398,59 @@ async function baiduSearch(query) {
   return navigateToUrl(searchUrl);
 }
 
+// ==================== Playwright 管理函数 ====================
+
+// 启动 Playwright
+async function launchPlaywright(options = {}) {
+  try {
+    if (!playwrightManager) {
+      playwrightManager = new PlaywrightManager();
+    }
+
+    if (playwrightManager.isRunning) {
+      return { success: false, error: "Playwright 已在运行" };
+    }
+
+    await playwrightManager.launch(options);
+
+    // 启动 HTTP 服务器（如果还没启动）
+    if (!httpServer) {
+      await startHTTPServer();
+    }
+
+    const mode = options.connectToCDP ? "playwright-connected" : "playwright";
+    writeLog(`Playwright 启动成功 (${mode})`);
+    return { success: true, mode };
+  } catch (error) {
+    writeLog(`Playwright 启动失败: ${error.message}`);
+    return { success: false, error: error.message };
+  }
+}
+
+// 连接到已有的 Chrome 实例（Playwright）
+async function connectPlaywrightToCDP(cdpUrl = "http://localhost:9222") {
+  return launchPlaywright({
+    connectToCDP: true,
+    cdpUrl: cdpUrl,
+  });
+}
+
+// 停止 Playwright
+async function stopPlaywright() {
+  try {
+    if (!playwrightManager) {
+      return { success: false, error: "Playwright 未初始化" };
+    }
+
+    const result = await playwrightManager.stop();
+    writeLog("Playwright 已停止");
+    return result;
+  } catch (error) {
+    writeLog(`停止 Playwright 失败: ${error.message}`);
+    return { success: false, error: error.message };
+  }
+}
+
 // IPC 处理程序
 
 // 暴露日志文件路径给渲染进程
@@ -717,19 +1458,35 @@ ipcMain.handle("get-log-path", () => {
   return logFile;
 });
 
-ipcMain.handle("launch-chrome", async (event, mode, useExistingProfile) => {
-  writeLog(`收到启动请求: mode=${mode}, useExisting=${useExistingProfile}`);
-  controlMode = mode || "direct";
+ipcMain.handle(
+  "launch-chrome",
+  async (event, mode, useExistingProfile, engine) => {
+    writeLog(
+      `收到启动请求: mode=${mode}, useExisting=${useExistingProfile}, engine=${engine}`
+    );
+    controlMode = mode || "direct";
+    browserEngine = engine || "chrome-mcp";
 
-  if (controlMode === "mcp") {
-    return launchMCP();
-  } else {
-    return launchChrome(useExistingProfile);
+    // 如果选择 Playwright
+    if (browserEngine === "playwright") {
+      return launchPlaywright({ headless: false });
+    }
+    // 原有的 Chrome MCP 逻辑
+    else if (controlMode === "mcp") {
+      return launchMCP();
+    } else {
+      return launchChrome(useExistingProfile);
+    }
   }
-});
+);
 
 ipcMain.handle("stop-chrome", async () => {
-  if (controlMode === "mcp") {
+  // 如果使用 Playwright
+  if (browserEngine === "playwright") {
+    return stopPlaywright();
+  }
+  // 原有逻辑
+  else if (controlMode === "mcp") {
     return stopMCP();
   } else {
     return stopChrome();
@@ -781,15 +1538,159 @@ ipcMain.handle("mcp-search-baidu", async (event, keyword) => {
   }
 });
 
+// 辅助函数：发送操作日志
+function sendOperationLog(type, tool, message, mcpName = "chrome-mcp") {
+  if (mainWindow) {
+    mainWindow.webContents.send("operation-log", {
+      type,
+      tool,
+      message,
+      mcpName, // 添加 MCP 服务名称
+    });
+  }
+}
+
+// Playwright 专用 handlers
+ipcMain.handle("playwright-navigate", async (event, url) => {
+  try {
+    sendOperationLog("info", "Playwright", `导航到: ${url}`);
+    if (!playwrightManager || !playwrightManager.isPlaywrightRunning()) {
+      sendOperationLog("error", "Playwright", "未运行");
+      return { success: false, error: "Playwright 未运行" };
+    }
+    const result = await playwrightManager.navigate(url);
+    sendOperationLog("success", "Playwright", `✓ 导航成功`);
+    return result;
+  } catch (error) {
+    sendOperationLog("error", "Playwright", `✗ 导航失败: ${error.message}`);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("playwright-click", async (event, selector) => {
+  try {
+    sendOperationLog("info", "Playwright", `点击元素: ${selector}`);
+    if (!playwrightManager || !playwrightManager.isPlaywrightRunning()) {
+      sendOperationLog("error", "Playwright", "未运行");
+      return { success: false, error: "Playwright 未运行" };
+    }
+    const result = await playwrightManager.click(selector);
+    sendOperationLog("success", "Playwright", `✓ 点击成功`);
+    return result;
+  } catch (error) {
+    sendOperationLog("error", "Playwright", `✗ 点击失败: ${error.message}`);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("playwright-fill", async (event, selector, value) => {
+  try {
+    sendOperationLog(
+      "info",
+      "Playwright",
+      `填写字段: ${selector} = "${value}"`
+    );
+    if (!playwrightManager || !playwrightManager.isPlaywrightRunning()) {
+      sendOperationLog("error", "Playwright", "未运行");
+      return { success: false, error: "Playwright 未运行" };
+    }
+    const result = await playwrightManager.fill(selector, value);
+    sendOperationLog("success", "Playwright", `✓ 填写成功`);
+    return result;
+  } catch (error) {
+    sendOperationLog("error", "Playwright", `✗ 填写失败: ${error.message}`);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("playwright-screenshot", async (event, options) => {
+  try {
+    if (!playwrightManager || !playwrightManager.isPlaywrightRunning()) {
+      return { success: false, error: "Playwright 未运行" };
+    }
+    return await playwrightManager.screenshot(options);
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("playwright-evaluate", async (event, script) => {
+  try {
+    if (!playwrightManager || !playwrightManager.isPlaywrightRunning()) {
+      return { success: false, error: "Playwright 未运行" };
+    }
+    return await playwrightManager.evaluate(script);
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("playwright-get-title", async () => {
+  try {
+    if (!playwrightManager || !playwrightManager.isPlaywrightRunning()) {
+      return { success: false, error: "Playwright 未运行" };
+    }
+    return await playwrightManager.getTitle();
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Playwright 连接到已有 Chrome 实例
+ipcMain.handle("playwright-connect-cdp", async (event, cdpUrl) => {
+  try {
+    return await connectPlaywrightToCDP(cdpUrl);
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 // 应用退出时清理
-app.on("before-quit", async () => {
-  if (chromeProcess) {
-    await stopChrome();
-  }
-  if (mcpProcess) {
-    await stopMCP();
-  }
-  if (httpServer) {
-    await stopHTTPServer();
+app.on("before-quit", async (event) => {
+  try {
+    console.log("应用即将退出，开始清理资源...");
+
+    // 阻止默认退出行为，等待清理完成
+    event.preventDefault();
+
+    const cleanup = async () => {
+      try {
+        if (chromeProcess) {
+          console.log("正在停止Chrome进程...");
+          await stopChrome();
+        }
+        if (mcpProcess) {
+          console.log("正在停止MCP进程...");
+          await stopMCP();
+        }
+        if (playwrightManager) {
+          console.log("正在停止Playwright...");
+          await stopPlaywright();
+        }
+        if (httpServer) {
+          console.log("正在停止HTTP服务器...");
+          await stopHTTPServer();
+        }
+        console.log("资源清理完成，退出应用");
+      } catch (error) {
+        console.error("清理过程中出现错误:", error);
+        // 即使清理失败，也要继续退出
+      }
+
+      // 清理完成后，真正退出应用
+      app.quit();
+    };
+
+    // 设置最大清理时间为3秒，避免无限等待
+    const timeout = setTimeout(() => {
+      console.log("清理超时，强制退出");
+      app.quit();
+    }, 3000);
+
+    await cleanup();
+    clearTimeout(timeout);
+  } catch (error) {
+    console.error("退出清理异常:", error);
+    app.quit();
   }
 });

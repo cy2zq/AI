@@ -5,18 +5,18 @@
     <!-- https://developer.mozilla.org/zh-CN/docs/Web/HTTP/CSP -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://10.1.110.242:3000"
+      content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:3000 http://127.0.0.1:3000"
     />
-    <title>Electron APP</title>
+    <title>Chrome MCP 控制器 - 白色主题</title>
     <style>
       body {
         font-family:
           -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
           Arial, sans-serif;
         margin: 0;
-        padding: 0px;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
+        padding: 20px;
+        background: #f8f9fa;
+        color: #2c3e50;
         min-height: 100vh;
         display: flex;
         flex-direction: column;
@@ -24,28 +24,27 @@
         justify-content: center;
       }
       .container {
-        background: rgba(255, 255, 255, 0.1);
-        backdrop-filter: blur(10px);
-        border-radius: 20px;
-        padding: 40px;
+        background: #ffffff;
+        border-radius: 16px;
+        padding: 32px;
         text-align: center;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-        border: 1px solid rgba(255, 255, 255, 0.2);
+        box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+        border: 1px solid #e9ecef;
+        width: 90%;
+        max-width: 900px;
       }
       h1 {
         font-size: 3em;
         margin-bottom: 20px;
-        background: linear-gradient(45deg, #fff, #f0f0f0);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
+        color: #2c3e50;
+        font-weight: 700;
       }
       .version-info {
         margin: 30px 0;
         padding: 20px;
-        background: rgba(255, 255, 255, 0.1);
-        border-radius: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: #f8f9fa;
+        border-radius: 12px;
+        border: 1px solid #e9ecef;
       }
       .version-item {
         margin: 10px 0;
@@ -53,81 +52,90 @@
       }
       .version-label {
         font-weight: bold;
-        color: #ffd700;
+        color: #495057;
       }
       .welcome-text {
         font-size: 1.2em;
         margin: 20px 0;
-        opacity: 0.9;
+        color: #6c757d;
       }
 
       .control-panel {
-        background: rgba(255, 255, 255, 0.1);
-        border-radius: 15px;
-        padding: 25px;
-        margin-top: 30px;
-        backdrop-filter: blur(10px);
-        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: #ffffff;
+        border-radius: 16px;
+        padding: 32px;
+        margin: 24px 0;
+        box-shadow: 0 2px 16px rgba(0, 0, 0, 0.06);
+        border: 1px solid #e9ecef;
       }
 
       .control-panel h3 {
         margin-top: 0;
-        color: #fff;
+        color: #2c3e50;
         text-align: center;
         margin-bottom: 20px;
+        font-weight: 600;
       }
 
       .control-btn {
-        background: linear-gradient(45deg, #4caf50, #45a049);
+        background: #28a745;
         color: white;
         border: none;
-        padding: 12px 24px;
-        border-radius: 8px;
+        padding: 14px 28px;
+        border-radius: 12px;
         cursor: pointer;
         font-size: 16px;
         margin: 8px;
-        transition: all 0.3s;
-        font-weight: bold;
+        transition: all 0.2s ease;
+        font-weight: 600;
+        box-shadow: 0 2px 8px rgba(40, 167, 69, 0.3);
       }
 
       .control-btn:hover:not(:disabled) {
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(76, 175, 80, 0.4);
+        transform: translateY(-1px);
+        box-shadow: 0 4px 16px rgba(40, 167, 69, 0.4);
+        background: #218838;
       }
 
       .control-btn:disabled {
-        background: #cccccc;
+        background: #e9ecef;
+        color: #6c757d;
         cursor: not-allowed;
         transform: none;
         box-shadow: none;
       }
 
       .stop-btn {
-        background: linear-gradient(45deg, #f44336, #d32f2f);
+        background: #dc3545;
+        box-shadow: 0 2px 8px rgba(220, 53, 69, 0.3);
       }
 
       .stop-btn:hover:not(:disabled) {
-        box-shadow: 0 4px 12px rgba(244, 67, 54, 0.4);
+        background: #c82333;
+        box-shadow: 0 4px 16px rgba(220, 53, 69, 0.4);
       }
 
       .status {
         text-align: center;
-        padding: 10px;
-        margin: 15px 0;
-        border-radius: 8px;
-        background: rgba(0, 0, 0, 0.2);
-        font-weight: bold;
+        padding: 16px;
+        margin: 20px 0;
+        border-radius: 12px;
+        background: #f8f9fa;
+        border: 1px solid #e9ecef;
+        font-weight: 600;
+        color: #495057;
       }
 
       .browser-actions {
-        margin-top: 20px;
-        padding-top: 20px;
-        border-top: 1px solid rgba(255, 255, 255, 0.2);
+        margin-top: 24px;
+        padding-top: 24px;
+        border-top: 1px solid #e9ecef;
       }
 
       .browser-actions h4 {
-        color: #fff;
-        margin-bottom: 15px;
+        color: #2c3e50;
+        margin-bottom: 16px;
+        font-weight: 600;
       }
 
       .action-group {
@@ -138,56 +146,68 @@
 
       .url-input {
         flex: 1;
-        padding: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.3);
-        border-radius: 6px;
-        background: rgba(255, 255, 255, 0.1);
-        color: white;
+        padding: 12px 16px;
+        border: 1px solid #ced4da;
+        border-radius: 10px;
+        background: #ffffff;
+        color: #495057;
         font-size: 14px;
+        transition:
+          border-color 0.2s ease,
+          box-shadow 0.2s ease;
       }
 
       .url-input::placeholder {
-        color: rgba(255, 255, 255, 0.6);
+        color: #adb5bd;
+      }
+
+      .url-input:focus {
+        outline: none;
+        border-color: #80bdff;
+        box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.1);
       }
 
       .action-btn {
-        background: linear-gradient(45deg, #2196f3, #1976d2);
+        background: #007bff;
         color: white;
         border: none;
-        padding: 10px 20px;
-        border-radius: 6px;
+        padding: 12px 20px;
+        border-radius: 10px;
         cursor: pointer;
         font-size: 14px;
-        transition: all 0.3s;
+        transition: all 0.2s ease;
         white-space: nowrap;
+        font-weight: 500;
+        box-shadow: 0 2px 8px rgba(0, 123, 255, 0.3);
       }
 
       .action-btn:hover {
         transform: translateY(-1px);
-        box-shadow: 0 3px 8px rgba(33, 150, 243, 0.4);
+        box-shadow: 0 4px 12px rgba(0, 123, 255, 0.4);
+        background: #0056b3;
       }
 
       .profile-options {
-        margin: 15px 0;
-        padding: 15px;
-        background: rgba(0, 0, 0, 0.1);
-        border-radius: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.2);
+        margin: 16px 0;
+        padding: 16px;
+        background: #f8f9fa;
+        border-radius: 12px;
+        border: 1px solid #e9ecef;
       }
 
       .option-label {
         display: block;
-        color: white;
+        color: #495057;
         margin: 8px 0;
         cursor: pointer;
         font-size: 14px;
-        padding: 5px;
-        border-radius: 5px;
-        transition: background-color 0.3s;
+        padding: 8px;
+        border-radius: 8px;
+        transition: background-color 0.2s ease;
       }
 
       .option-label:hover {
-        background: rgba(255, 255, 255, 0.1);
+        background: #e9ecef;
       }
 
       .option-label input[type="radio"] {
@@ -235,29 +255,96 @@
       }
 
       .chat-message.user .message-content {
-        background: linear-gradient(45deg, #2196f3, #1976d2);
+        background: #007bff;
         color: white;
         text-align: left;
       }
 
       .chat-message.assistant .message-content {
-        background: rgba(76, 175, 80, 0.2);
-        color: #fff;
-        border: 1px solid rgba(76, 175, 80, 0.4);
+        background: #f8f9fa;
+        color: #2c3e50;
+        border: 1px solid #e9ecef;
         text-align: left;
       }
 
       .chat-message.system .message-content {
-        background: rgba(255, 193, 7, 0.2);
-        color: #ffd54f;
-        border: 1px solid rgba(255, 193, 7, 0.4);
+        background: #e7f3ff;
+        color: #0c63e4;
+        border: 1px solid #b3d7ff;
         font-size: 13px;
       }
 
       .chat-message.error .message-content {
-        background: rgba(244, 67, 54, 0.2);
-        color: #ff8a80;
-        border: 1px solid rgba(244, 67, 54, 0.4);
+        background: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+      }
+
+      /* 工具调用消息样式 */
+      .chat-message.tool {
+        text-align: left;
+      }
+
+      .chat-message.tool .message-content {
+        background: #f3e5f5;
+        color: #4a148c;
+        border-left: 3px solid #9c27b0;
+        font-family: "Courier New", monospace;
+        font-size: 13px;
+        padding: 12px 16px;
+      }
+
+      .tool-header {
+        display: flex;
+        align-items: center;
+        margin-bottom: 4px;
+        font-weight: bold;
+      }
+
+      .tool-mcp-name {
+        background: #e1bee7;
+        padding: 4px 8px;
+        border-radius: 6px;
+        font-size: 11px;
+        margin-right: 8px;
+        color: #4a148c;
+        font-weight: 600;
+      }
+
+      .tool-name {
+        color: #6a1b9a;
+        font-weight: 600;
+      }
+
+      .tool-status {
+        margin-left: auto;
+        font-size: 11px;
+      }
+
+      .tool-status.success {
+        color: #28a745;
+      }
+
+      .tool-status.error {
+        color: #dc3545;
+      }
+
+      .tool-status.running {
+        color: #007bff;
+      }
+
+      .tool-params {
+        color: #7b1fa2;
+        font-size: 12px;
+        margin-top: 4px;
+        opacity: 0.8;
+      }
+
+      .tool-duration {
+        color: #8e24aa;
+        font-size: 11px;
+        margin-top: 4px;
+        opacity: 0.7;
       }
 
       #chat-messages::-webkit-scrollbar {
@@ -265,46 +352,79 @@
       }
 
       #chat-messages::-webkit-scrollbar-track {
-        background: rgba(0, 0, 0, 0.1);
+        background: #f8f9fa;
         border-radius: 4px;
       }
 
       #chat-messages::-webkit-scrollbar-thumb {
-        background: rgba(255, 255, 255, 0.3);
+        background: #ced4da;
         border-radius: 4px;
       }
 
       #chat-messages::-webkit-scrollbar-thumb:hover {
-        background: rgba(255, 255, 255, 0.5);
+        background: #adb5bd;
+      }
+
+      /* Markdown 样式 */
+      .message-content ul,
+      .message-content ol {
+        margin: 8px 0;
+        padding-left: 20px;
+        text-align: left;
+      }
+
+      .message-content li {
+        margin: 4px 0;
+      }
+
+      .message-content code {
+        background: #f8f9fa;
+        color: #e83e8c;
+        padding: 3px 6px;
+        border-radius: 4px;
+        font-family: "Courier New", monospace;
+        font-size: 13px;
+        border: 1px solid #e9ecef;
+      }
+
+      .message-content pre {
+        background: #f8f9fa;
+        padding: 16px;
+        border-radius: 8px;
+        overflow-x: auto;
+        margin: 12px 0;
+        border: 1px solid #e9ecef;
+      }
+
+      .message-content pre code {
+        background: none;
+        padding: 0;
+      }
+
+      .message-content strong {
+        font-weight: bold;
+        color: #495057;
+      }
+
+      .message-content em {
+        font-style: italic;
+      }
+
+      .message-content p {
+        margin: 8px 0;
+      }
+
+      .message-content h1,
+      .message-content h2,
+      .message-content h3 {
+        margin: 12px 0 8px 0;
+        color: #2c3e50;
       }
     </style>
   </head>
   <body>
     <div class="container">
-      <h1>🚀 欢迎使用 Electron!</h1>
-      <p class="welcome-text">这是一个基于 Electron 构建的桌面应用程序</p>
-
-      <div class="version-info">
-        <h3>运行环境信息</h3>
-        <div class="version-item">
-          <span class="version-label">Node.js11:</span>
-          <span id="node-version">加载中...</span>
-        </div>
-        <div class="version-item">
-          <span class="version-label">Chromium:</span>
-          <span id="chrome-version">加载中...</span>
-        </div>
-        <div class="version-item">
-          <span class="version-label">Electron:</span>
-          <span id="electron-version">加载中...</span>
-        </div>
-      </div>
-
-      <p>🎉 应用已成功启动！你可以开始开发你的 Electron 应用了。</p>
-
       <div class="control-panel">
-        <h3>🌐 浏览器控制中心</h3>
-
         <!-- 隐藏的默认设置 -->
         <input type="hidden" id="control-mode" value="mcp" />
         <input type="hidden" id="profile-mode" value="isolated" />
@@ -314,30 +434,6 @@
           ⏹️ 停止
         </button>
         <div id="status" class="status">⭕ MCP 模式未启动</div>
-
-        <div
-          style="
-            margin-top: 10px;
-            padding: 10px;
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 8px;
-            font-size: 12px;
-          "
-        >
-          <div>📝 调试日志文件:</div>
-          <div
-            id="log-path"
-            style="color: #aaa; word-break: break-all; margin-top: 5px"
-          >
-            加载中...
-          </div>
-          <div style="margin-top: 5px; color: #888">
-            💡 双击启动问题？请在终端运行:
-          </div>
-          <div style="color: #6c9">
-            tail -f <span id="log-path-short">...</span>
-          </div>
-        </div>
 
         <div class="browser-actions" id="browser-actions" style="display: none">
           <h4>📱 浏览器操作</h4>
@@ -363,25 +459,29 @@
 
         <!-- AI 对话窗口 -->
         <div id="ai-chat-panel" style="display: none; margin-top: 20px">
-          <h4 style="color: #fff; margin-bottom: 15px">💬 AI 智能助手</h4>
+          <h4 style="color: #2c3e50; margin-bottom: 16px; font-weight: 600">
+            💬 AI 智能助手
+          </h4>
 
           <!-- 对话显示区域 -->
           <div
             id="chat-messages"
             style="
-              background: rgba(0, 0, 0, 0.2);
-              border-radius: 8px;
-              padding: 15px;
-              height: 300px;
+              background: #ffffff;
+              border-radius: 12px;
+              padding: 20px;
+              height: 450px;
               overflow-y: auto;
-              margin-bottom: 15px;
-              border: 1px solid rgba(255, 255, 255, 0.1);
+              margin-bottom: 20px;
+              border: 1px solid #e9ecef;
+              box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1);
             "
           >
             <div class="chat-message system">
               <div class="message-content">
-                👋 您好！我是 AI
-                助手，可以帮您控制浏览器。试试说："打开淘宝搜索手机"
+                👋 您好！我是 AI 助手，可以帮您控制浏览器。<br />
+                💡 我使用的每个工具都会在这里实时显示，包括 MCP
+                服务名称和执行结果。
               </div>
             </div>
           </div>
@@ -394,6 +494,7 @@
               placeholder="输入您的指令，例如：打开淘宝搜索帽子..."
               class="url-input"
               style="flex: 1"
+              rows="3"
             />
             <button
               id="ai-send-btn"
@@ -403,23 +504,12 @@
               📤 发送
             </button>
           </div>
-
-          <div
-            style="
-              margin-top: 10px;
-              padding: 10px;
-              background: rgba(76, 175, 80, 0.1);
-              border-radius: 5px;
-            "
-          >
-            <p style="color: #81c784; font-size: 12px; margin: 0">
-              ✨ 使用通义千问大模型 + APP 内置 MCP
-            </p>
-          </div>
         </div>
       </div>
     </div>
 
+    <!-- Marked.js for Markdown rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>

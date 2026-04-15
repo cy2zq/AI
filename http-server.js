@@ -3,10 +3,11 @@ const http = require("http");
 const url = require("url");
 
 class HTTPServer {
-  constructor(port = 9224) {
+  constructor(port = 9224, logCallback = null) {
     this.port = port;
     this.server = null;
     this.mcpHandlers = null;
+    this.logCallback = logCallback; // 用于发送日志到渲染进程
   }
 
   /**
@@ -79,6 +80,7 @@ class HTTPServer {
         const body = await this.readBody(req);
 
         if (!this.mcpHandlers || !this.mcpHandlers[toolName]) {
+          this.sendLog("error", "HTTP", `工具不存在: ${toolName}`);
           this.sendJSON(res, 404, {
             success: false,
             error: `工具不存在: ${toolName}`,
@@ -86,8 +88,35 @@ class HTTPServer {
           return;
         }
 
-        const result = await this.mcpHandlers[toolName](body);
-        this.sendJSON(res, 200, result);
+        // 记录工具调用开始
+        const paramsStr = this.formatParams(body);
+        this.sendLog(
+          "info",
+          toolName,
+          `开始执行${paramsStr ? `: ${paramsStr}` : ""}`
+        );
+
+        try {
+          const startTime = Date.now();
+          const result = await this.mcpHandlers[toolName](body);
+          const duration = Date.now() - startTime;
+
+          // 记录工具调用成功
+          if (result.success) {
+            this.sendLog("success", toolName, `✓ 执行成功 (${duration}ms)`);
+          } else {
+            this.sendLog(
+              "warning",
+              toolName,
+              `⚠ ${result.error || "执行失败"}`
+            );
+          }
+
+          this.sendJSON(res, 200, result);
+        } catch (error) {
+          this.sendLog("error", toolName, `✗ 执行异常: ${error.message}`);
+          throw error;
+        }
         return;
       }
 
@@ -131,6 +160,34 @@ class HTTPServer {
   sendJSON(res, statusCode, data) {
     res.writeHead(statusCode, { "Content-Type": "application/json" });
     res.end(JSON.stringify(data));
+  }
+
+  /**
+   * 发送日志到渲染进程
+   */
+  sendLog(type, tool, message, mcpName = "chrome-mcp") {
+    if (this.logCallback) {
+      this.logCallback(type, tool, message, mcpName);
+    }
+    console.log(`[${type.toUpperCase()}] [${mcpName}] ${tool}: ${message}`);
+  }
+
+  /**
+   * 格式化参数以便在日志中显示
+   */
+  formatParams(params) {
+    if (!params || Object.keys(params).length === 0) {
+      return "";
+    }
+
+    const parts = [];
+    if (params.url) parts.push(params.url);
+    if (params.keyword) parts.push(`"${params.keyword}"`);
+    if (params.uid) parts.push(`元素#${params.uid}`);
+    if (params.value) parts.push(`值="${params.value}"`);
+    if (params.selector) parts.push(`选择器="${params.selector}"`);
+
+    return parts.join(", ");
   }
 }
 

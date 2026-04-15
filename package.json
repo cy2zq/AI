@@ -24,7 +24,9 @@
     "nodemon": "^3.1.10"
   },
   "dependencies": {
-    "chrome-devtools-mcp": "latest"
+    "chrome-devtools-mcp": "latest",
+    "playwright": "^1.56.1",
+    "ws": "^8.18.0"
   },
   "config": {
     "forge": {
@@ -34,10 +36,7 @@
         "icon": "resources/Ai_File",
         "asar": false,
         "osxSign": false,
-        "osxNotarize": false,
-        "extraResource": [
-          "resources"
-        ]
+        "osxNotarize": false
       },
       "makers": [
         {
